@@ -2,10 +2,6 @@ This is the analysis of the RNAseq data from RNA extracted from tumours
 of Emt6.Plk4 mice (experiment SG-JFG01 mouse experiment). There are 5 
 -DOX and 5 +DOX tumours.
 
-This is the analysis of the RNAseq data from RNA extracted from tumours 
-of Emt6.Plk4 mice (experiment SG-JFG01 mouse experiment). There are 5 
--DOX and 5 +DOX tumours.
-
 
 ## Get files and inspect them (Apocrita):
 
@@ -72,9 +68,9 @@ Index bam files (needed only to look on IGV)
     
     qsub index.sh
 
-Transfer bam and bam.bai files to local computer and inspect in IGV
+Output files are bam.bai files
 
-Work on local computer from here:
+Transfer bam and bam.bai files to local computer and inspect in IGV
 
 Feature counts 
 
@@ -89,7 +85,7 @@ Use the edited edited .gtf file, generated previously as below:
         sed 's/\(gene_id "[^"]*\).*/\1"/' genomic.gtf > genomic_filtered.gtf
         tail -n +9 genomic_filtered.gtf > genomic_filtered.gtf
 
-run feature counts
+run feature counts (different scripts in laptop vs cluster bc of different ways of running samples in parallel)
     
    on laptop: 
 
@@ -97,7 +93,9 @@ run feature counts
 
    on cluster: 
    
-   qsub feature_counts_cluster.sh
+    qsub feature_counts_cluster.sh
+
+Output is counts.txt file with all counts, which should be converted to csv and edited (check sample names, remove unnecessary columns etc) before importing to R
 
 
 ## Alignment to reference transcriptome (Apocrita)
@@ -109,6 +107,10 @@ First had to index the reference transcriptome (similar to indexing reference ge
 Then can align samples (before running do a test run to print the command by adding echo before the command - see script)
     
     qsub salmon.sh
+
+Output are folders for each sample with quant.sf files, that are then imported to R using tximport, transforming in a data frame
+
+## Important: after inspection and alignment of fq files, run chmod 444 folder_where_files_are to remove edit access to folder and avoid deleting the files accidentaly (can undo this by chmod 770 folder)
 
 
 ### Then use raw or normalised counts for further analysis in R
