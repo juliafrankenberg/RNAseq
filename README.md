@@ -94,11 +94,11 @@ run feature counts
 
 ## Alignment to reference transcriptome (Apocrita)
 
-To get TPM-normalised counts
+To get TPM-normalised counts, which is needed for some RNAseq deconvolution methods
 
-First had to index the reference transcriptome (similar to indexing reference genome)
+First had to index the reference transcriptome (similar to indexing reference genome, done once only), result of this is located in salmon_index
 
-Then can align samples
+Then can align samples (before running do a test run to print the command by adding echo before the command - see script)
     
     qsub salmon.sh
 
