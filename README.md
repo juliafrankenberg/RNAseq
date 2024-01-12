@@ -78,18 +78,26 @@ Work on local computer from here:
 
 Feature counts 
 
-need to convert genomic feature file gff file to gtf:
+Use the edited edited .gtf file, generated previously as below:
+
+    convert genomic feature file gff file to gtf:
         
         agat_convert_sp_gff2gtf.pl --gff genomic.gff -o genomic.gtf
 
-edit the gtf file a bit to keep only "gene_id" attributes and remove header:
+    edit the gtf file a bit to keep only "gene_id" attributes and remove header:
         
         sed 's/\(gene_id "[^"]*\).*/\1"/' genomic.gtf > genomic_filtered.gtf
         tail -n +9 genomic_filtered.gtf > genomic_filtered.gtf
 
 run feature counts
     
-    qsub feature_counts.sh
+   on laptop: 
+
+    bash feature_counts.sh
+
+   on cluster: 
+   
+   qsub feature_counts_cluster.sh
 
 
 ## Alignment to reference transcriptome (Apocrita)
