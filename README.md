@@ -40,11 +40,11 @@ find . -type f | grep -Ei "Hist.*fq|fq.*Hist"
 
 Create a fastqc directory in /results and run fastqc
 
-    qsub fastqc.sh  
+    qsub a1_fastqc.sh  
     
 Transfer output to local computer and look at reports online and/or create a summary report:
 
-    qsub summary.sh  
+    qsub a2_summary.sh  
     
 It's normal to get failed per base sequence and sequence duplication levels in RNAseq data
 
@@ -60,13 +60,13 @@ Using STAR (https://physiology.med.cornell.edu/faculty/skrabanek/lab/angsd/lectu
 
 Align fastq files to reference genome (before running do a test run to print the command by adding echo before the command - see script)
     
-    qsub star.sh
+    qsub a3_star.sh
 
 Output files are sorted BAM files (no need to convert SAM > BAM and sort like in Hisat2)
 
 Index bam files (needed only to look on IGV)
     
-    qsub index.sh
+    qsub a4_index.sh
 
 Output files are bam.bai files
 
@@ -93,7 +93,7 @@ run feature counts (different scripts in laptop vs cluster bc of different ways 
 
    on cluster: 
    
-    qsub feature_counts_cluster.sh
+    qsub a6_feature_counts_cluster.sh
 
 Output is counts.txt file with all counts, which should be converted to csv and edited (check sample names, remove unnecessary columns etc) before importing to R
 
@@ -106,7 +106,7 @@ First had to index the reference transcriptome (similar to indexing reference ge
 
 Then can align samples (before running do a test run to print the command by adding echo before the command - see script)
     
-    qsub salmon.sh
+    qsub a5_salmon.sh
 
 Output are folders for each sample with quant.sf files, that are then imported to R using tximport, transforming in a data frame
 
