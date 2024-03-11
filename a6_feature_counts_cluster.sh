@@ -1,4 +1,10 @@
 #!/bin/bash
+#!-pe smp 4
+#$ -l h_vmem=32G
+#$ -l h_rt=1:0:0
+#$ -cwd
+#$ -o job_output/
+#$ -e job_errors/
 
 # Define the paths to your input files
 FEATURES=assets/ref_genomes/GRCm39/data/GCF_000001635.27/genomic_filtered.gtf
@@ -16,10 +22,7 @@ if [ ! -f "$BAM_LIST" ]; then
   exit 1
 fi
 
-# Print the command to check it's correct
-echo "cat \"$BAM_LIST\" | parallel -j 1 echo {} | xargs featureCounts -p -F GTF -a \"$FEATURES\" -o results/featurecounts/counts.txt"
+module load use.dev subread/2.0.6
 
-# Process the sample files in parallel
-cat "$BAM_LIST" | parallel -j 1 echo {} | \
-xargs featureCounts -p -F GTF -a "$FEATURES" -o results/featurecounts/counts.txt
+featureCounts -p -F GTF -a "$FEATURES" -o results/featurecounts/counts.txt $(cat $BAM_LIST)
 
