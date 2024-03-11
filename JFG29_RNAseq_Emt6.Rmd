@@ -1,0 +1,798 @@
+---
+title: "JFG29_RNAseq_Emt6_tumours"
+author: "Julia F Garcia"
+date: "January 2024"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+  html_notebook:
+    toc: yes
+editor_options:
+  chunk_output_type: inline
+  markdown:
+    wrap: sentence
+---
+
+**First need to prepare the renvironment:** 
+
+- If it's a repeat analysis, download the renv.lock file from previous analysis into working directory
+- run renv::init() to initialize renv, if copying a previous renv.lock file it will ask what to do with existing renv.lock file, click 1. Restore the project from the lockfile.
+- if adding more packages, install packages as normal, just run renv::snapshot() to save these to renv
+
+```{r setup, warning=FALSE, message=FALSE}
+
+# Don't inclue warning and messages in output
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+# Time stamp
+Sys.time()
+
+# Clean environment
+rm(list=ls())
+graphics.off()
+
+# Load libraries
+library(readr)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(DESeq2)
+library(edgeR)
+library(ggplot2)
+library(RColorBrewer)
+library(pheatmap)
+library(limma)
+library(fastcluster)
+library(GSVA)
+library(rmarkdown)
+library(WGCNA)
+library(EnhancedVolcano)
+
+
+# Define paths for folder locations and input files (this can then be changed here only if locations change)
+
+results.tables <- "results/R/tables/test_nohist173"
+results.plots <- "results/R/plots/test_nohist173"
+
+dir.create(results.tables, showWarnings = F, recursive = T)
+dir.create(results.plots, showWarnings = F, recursive = T)
+
+counts <- "data/R/raw_counts_nohist173.csv"
+design <- "data/R/design_nohist173.csv"
+
+
+# Read files
+counts <- read.csv(counts, header = T, 
+                   stringsAsFactors = F) 
+  
+
+design <- read.csv(design, header = T) 
+design[-1] <- lapply(design[-1], as.factor) #convert variables to factors
+
+
+```
+
+A few good tutorials to follow: <https://sbc.shef.ac.uk/workshops/2018-07-10-rna-seq/rna-seq-preprocessing.nb.html> <https://scienceparkstudygroup.github.io/rna-seq-lesson/05-descriptive-plots/index.html>
+
+# Prepare count file
+
+```{r}
+#Order rows by alphabetical order
+counts <- counts[,order(names(counts))]
+
+#Remove rows where geneid is empty and rows with NA values
+counts <- counts[counts[, 1] != "", , drop = FALSE]
+counts <- counts[complete.cases(counts), ]
+## Edit rownames
+#Remove rownames
+rownames(counts) <- NULL
+#Set GeneID column as rownames
+counts <- column_to_rownames(counts, "Geneid")
+# Change geneID to MGNC/SYMBOL structure 
+rownames(counts) <- sub("^gene-", "", rownames(counts))
+
+
+# reorder counts columns according to the experimental design file
+counts <- counts[, design$sample]
+
+## Check that sample names match in both files
+all(colnames(counts) %in% design$sample)
+all(colnames(counts) == design$sample)
+
+```
+**Filter lowly expressed genes that may interfer in analysis**
+
+```{r}
+# Obtain counts per million (CPMs), this also normalises data to sequencing depth of each sample
+myCPM <- cpm(counts)
+# Have a look at the output
+head(myCPM)
+
+# Check what CPM corresponds to a count of 10 (we will filter out anything with less than 10 counts)
+# We will look at the first sample
+plot(myCPM[,1], counts[,1], xlab="CPM", ylab="Raw Count", main=colnames(myCPM)[1], 
+     ylim=c(0,50), xlim=c(0,3))
+# Add a vertical line at 0.5 CPM
+abline(v=0.1, h=10, col="blue")
+#0.1 CPM corresponds to 10 counts, anything below 10 counts is very low, indicating that gene is not expressed, so these should be filtered out.
+
+# Which values in myCPM are greater than 0.25?
+thresh <- myCPM > 0.1
+# This produces a logical matrix with TRUEs and FALSEs
+head(thresh)
+
+# Summary of how many TRUEs there are in each row
+# There are 15418 genes that have TRUEs in all 10 samples.
+rowSums(head(thresh))
+table(rowSums(thresh))
+
+# we would like to keep genes that have at least 3 TRUES in each row of thresh (bc we have 5 replicates per group)
+keep <- rowSums(thresh) >= 5
+summary(keep)
+
+# Subset the rows of countdata to keep the more highly expressed genes
+counts.keep <- counts[keep,]
+dim(counts)
+dim(counts.keep)
+
+```
+
+**For most downstream analysis, we need to normalise the samples:**
+
+Data should be normalised to control for sequencing depth, gene length and, optionally, variance.
+Normalisation can be performed using:
+
+-   DESeq includes some normalisation (median of ratios, takes into account RNA composition)
+
+-   DESeq VST, which also includes variance stabilisation, for visualisation purposes (e.g. heatmap, PCA)
+
+-   TPM or DEseq rlog for TME characterisation (TPM normalises for seq depth and gene length only)
+
+
+**Create DESeq Object** 
+
+```{r}
+## Create dds object
+dds <- DESeqDataSetFromMatrix(countData = counts.keep, 
+                              colData = design, 
+                              design = ~condition)
+
+dds
+
+
+```
+
+**Quality Control**
+
+```{r}
+
+#Number of reads for each sample (more than 40M which was what was ordered, that's good)
+colSums(assay(dds))
+barplot(colSums(assay(dds)), names=colData(dds)$Sample_code, las=2, main="Barplot of library sizes")
+
+```
+
+# Sample clustering
+
+First do vst normalisation and compare plots. 
+
+Explanation on variance stabilisation: If data is not normalised, then gene variance (how much expression levels of a gene vary across samples) is proportional to gene mean (mean expression level across all samples).
+Can see below in first plot before normalisation there is a correlation between mean and variance, and in the second plot this is no longer seen.
+
+```{r}
+# Plot of mean - sd comparison
+# Variance - mean plot for all genes
+p_mean_sd_scaled <- 
+  counts.keep %>% 
+  as.data.frame() %>% 
+  rownames_to_column("gene") %>% 
+  pivot_longer(cols = - gene, names_to = "sample", values_to = "counts") %>% 
+  group_by(gene) %>% 
+  summarise(gene_average = mean(counts), gene_stdev = sd(counts)) %>% 
+  ungroup() %>% 
+  ggplot(., aes(x = log10(gene_average), y = log10(gene_stdev))) +
+  geom_point(alpha = 0.5, fill = "grey", colour = "black") +
+  labs(x = "Gene count average (log10 scale)",
+       y = "Gene count standard deviation (log10 scale)") +
+  ggtitle("Mean - Standard deviation relationship\n(no variance stabilisation)")
+p_mean_sd_scaled
+
+# Variance stabilisation
+vsd = vst(object = dds, blind = TRUE, fitType = "parametric")
+
+# extract the matrix of variance stabilised counts
+variance_stabilised_counts <- assay(vsd)
+
+# create the mean-sd plot
+p_mean_sd_vst <- 
+  variance_stabilised_counts %>% 
+  as.data.frame() %>% 
+  rownames_to_column("gene") %>% 
+  pivot_longer(cols = - gene, names_to = "sample", values_to = "counts") %>% 
+  group_by(gene) %>% 
+  summarise(gene_average = mean(counts), gene_stdev = sd(counts)) %>% 
+  ungroup() %>% 
+  ggplot(., aes(x = gene_average, y = gene_stdev)) +
+  geom_point(alpha = 0.5, fill = "grey", colour = "black") +
+  labs(x = "Gene count average (variance stabilised)", 
+       y = "Gene count standard deviation (variance stabilised)") +
+  ggtitle("Mean - Standard deviation relationship\n(after variance stabilisation) ")
+p_mean_sd_vst
+
+# Check distributions of samples using boxplots, after vst normalisation
+boxplot(assay(vsd), xlab="", ylab="Log2 counts per million",las=2)
+# Let's add a blue horizontal line that corresponds to the median logCPM
+abline(h=median(assay(vsd)), col="blue", main="Boxplots of logCPMs (unnormalised)")
+```
+
+**Plot PCAs**
+
+
+```{r}
+#Change order and name of condition
+vsd$condition <- factor(vsd$condition, levels = c("noDOX", "DOX"))
+levels(vsd$condition) <- c("-DOX", "+DOX")
+
+# Create the PCA plot
+pca_data <- plotPCA(vsd, intgroup = "condition")
+nudge <- position_nudge(y = 1)
+pca_w_labels <- pca_data + 
+  geom_text(aes(label = name), 
+            position = nudge, size = 2) + ggtitle("Principal Component Analysis")
+
+pca <- pca_data + ggtitle("Principal Component Analysis")
+
+pca_w_labels
+pca
+
+
+ # Save the plot as a PDF file
+  pdf(paste0(results.plots, "/", "pca.pdf"), width = 6, height = 6)
+  print(pca)
+  dev.off()
+  
+  # Save the plot as a JPEG file
+  jpeg(paste0(results.plots, "/", "pca.jpeg"), width = 500, height = 500)
+  print(pca)
+  dev.off()
+
+```
+
+# Differential Expression
+
+DESeq2 doesn't actually use normalized counts, rather it uses the raw counts and models the normalization inside the Generalized Linear Model (GLM), so use dds object is enough.
+
+```{r, fig.width=8, fig.height=8}
+
+#Specify the control sample
+dds$condition <- relevel(dds$condition, ref = "noDOX")
+
+de <- DESeq(dds)
+res <- results(de)
+results <- as.data.frame(results(de)) 
+
+#Get only significant genes
+sign.genes <- results[results$padj < 0.05,]
+sign.genes <- sign.genes[!is.na(sign.genes$padj),]
+ordered.results <- sign.genes[order(sign.genes$padj),]
+paged_table(ordered.results)
+
+write.csv(ordered.results, paste0(results.tables, "/", "de_genes.csv"), row.names = TRUE)
+
+```
+
+```{r, fig.width=8, fig.height=8}
+#Volcano Plot
+#https://bioconductor.org/packages/devel/bioc/vignettes/EnhancedVolcano/inst/doc/EnhancedVolcano.html  
+
+
+ plot <- EnhancedVolcano(results,
+    lab = rownames(results),
+    x = 'log2FoldChange',
+    y = 'padj',
+    title = '-DOX vs +DOX tumours',
+    pCutoff = 0.05,
+    FCcutoff = 0.5,
+    pointSize = 2.5,
+    labSize = 8, 
+    labFace = 'bold',
+    col=c('grey', 'grey', 'grey', '#cb4154'),
+    colAlpha = 2, 
+    legendPosition = "none", 
+    cutoffLineType = 'blank')
+ 
+ plot
+ 
+ # Save the plot as a PDF file
+  pdf(paste0(results.plots, "/", "volcano.pdf"), width = 6, height = 6)
+  print(plot)
+  dev.off()
+  
+  # Save the plot as a JPEG file
+  jpeg(paste0(results.plots, "/", "volcano.jpeg"), width = 700, height = 700)
+  print(plot)
+  dev.off()
+  
+  
+  
+
+
+```
+
+
+```{r, fig.width=10, fig.height=8}
+#Quick GSEA Test
+library(clusterProfiler)
+library(enrichplot)
+library(org.Mm.eg.db)
+library(DOSE)
+
+#ordered.results <- read.csv(paste0(results.tables, "/", "de_genes.csv"), row.names = 1)
+
+#Get dataframe (only is dataset is loaded already)
+df <- ordered.results %>%
+  arrange(desc(log2FoldChange)) 
+
+# Extract the row names of the data frame
+#rownames_df <- rownames(df)
+
+# Remove the "gene-" prefix and convert to uppercase
+#new_rownames <- toupper(rownames_df)
+
+# Assign the modified row names back to the data frame
+#rownames(df) <- new_rownames
+
+
+# we want the log2 fold change only
+gene_list <- df$log2FoldChange
+
+# name the vector
+names(gene_list) <- row.names(df)
+
+
+# Define a vector of ontologies to test
+ontologies_to_test <- c("BP", "MF", "CC")
+
+# Create an empty list to store the results for each ontology
+gse_results <- list()
+
+# Iterate over each ontology
+for (ont in ontologies_to_test) {
+  # Perform gene set enrichment analysis using gseGO for the current ontology
+  gse <- gseGO(geneList = gene_list, 
+               ont = ont, 
+               keyType = "SYMBOL", 
+               minGSSize = 3, 
+               maxGSSize = 800, 
+               pvalueCutoff = 0.05, 
+               verbose = TRUE, 
+               OrgDb = org.Mm.eg.db, 
+               pAdjustMethod = "none")
+  
+  # Store the results in the list
+  gse_results[[ont]] <- gse
+  
+  # Load the required library
+  require(DOSE)
+  
+  # Create a dotplot for the current ontology and split by the sign
+  plot <- dotplot(gse, showCategory = 10, split = ".sign") +
+    facet_grid(.~.sign) +
+    ggtitle(paste("Ontology =", ont)) +
+    theme(axis.text.y = element_text(size = 15)) +
+    scale_color_gradient(low = "blue", high = "red") 
+  
+
+  
+  # Save the plot as a PDF file
+  pdf(paste0(results.plots, "/", "GSEA_plot_", ont, ".pdf"), width = 12, height = 10)
+  print(plot)
+  dev.off()
+  
+  # Save the plot as a JPEG file
+  jpeg(paste0(results.plots, "/", "GSEA_plot_", ont, ".jpeg"), width = 800, height = 700)
+  print(plot)
+  dev.off()
+  
+}
+
+```
+
+
+# TME characterisation
+
+**Option1: With TPM normalisation**
+```{r}
+# Combine TPM-normalised transcripts obtained with Salmon classification-based alignment with the tximport package. 
+# 
+# https://bioconductor.org/packages/release/bioc/html/tximport.html
+#
+# Transcript level summarization.
+
+# Load the packages
+library(tximport)
+
+# Generate the file names that contain the quantification data.
+files <- file.path('results/salmon_alignment',  design$sample, "quant.sf")
+# Summarize over transcripts.
+tx <- tximport(files, type="salmon", txOut=TRUE)
+
+#countsFromAbundance is only used to obtain raw counts scaled to library size and gene length, not needed here
+
+# Transform counts into a dataframe (abundance column contains TPM values).
+df <- data.frame(tx$abundance)
+# Set the column names.
+colnames(df) <- design$sample
+# Create a new column for transcript ids.
+df$refseq = rownames(df)
+# Reorganize the columns.
+df <- df[, c("refseq", design$sample)]
+
+#Get gene_id symbols
+feat_table <- read_tsv('assets/ncbi_GRCm39.tsv')
+feat_table$refseq <- feat_table$`Transcripts accession`
+# Create a new data frame with only "Symbol" and "refseq" columns
+feat_table <- feat_table[c("Symbol", "refseq")]
+#Remove NA
+feat_table <- feat_table[!is.na(feat_table$refseq),]
+feat_table <- feat_table[!is.na(feat_table$Symbol),]
+df <- df[!is.na(df$refseq),]
+# Merge data frames using common columns
+merged_df <- merge(df, feat_table, by.x = c("refseq"), by.y = c("refseq"), all = TRUE)
+cols <- c("refseq", "Symbol", design$sample)
+# Reorganize the columns.
+df <- merged_df[, cols]
+# Assuming 'df' is your data frame
+df <- unique(df)
+
+mouse_tpm <- df[,-1]
+row.names(mouse_tpm) <- mouse_tpm[,1]
+
+
+###Convert mouse to human
+annot <- read.delim("assets/GRCm38p6ToHuman_ortho_mart_export.txt", header = T)
+#Remove NA
+annot = annot[!is.na(annot$Human.gene.name),]
+
+#Prep df
+df1 <- df[!duplicated(df$Symbol), ]
+df2 <- df1[!is.na(df1$Symbol),]
+rownames(df2) <- df2$Symbol
+mouse <- df2[,-c(1,2)]
+
+df <- df2[, !(names(df2) %in% c("Symbol", "refseq"))]
+#See which names intersect
+ints <- intersect(rownames(df), annot$Gene.name)
+df = df[ints,]
+annot = annot[match(ints,annot$Gene.name),]
+
+tpm <- collapseRows(datET=df, rowGroup=annot$Human.gene.name, rowID=annot$Gene.name)$datETcollapsed
+
+
+
+write.csv(mouse, paste0(results.tables, "/","tpm_counts_mouse.csv"))
+
+write.csv(tpm, paste0(results.tables, "/","tpm_counts_human.csv"))
+
+
+```
+
+Now run Consensus TME with the tmp-normalised counts
+```{r, fig.width=12, fig.height=10}
+#Run Consensus TME
+library(ConsensusTME)
+library(ggpubr)
+
+#tpm <- read.csv(file = paste0(results.tables, "/", "tpm_counts_human.csv"), row.names = 1)
+
+tpm <- as.matrix(tpm)
+
+tme.result <- ConsensusTME::consensusTMEAnalysis(tpm, cancer = "Unfiltered", statMethod = "gsva")
+tme.result.df <- data.frame(tme.result)
+
+df.mm <- data.frame(design,t(tme.result)) 
+df.mm$condition <- factor(df.mm$condition, levels = c("noDOX", "DOX"))
+df.mm <- df.mm[order(df.mm$condition), ]
+
+df.mm <- pivot_longer(df.mm,
+  cols = colnames(df.mm)[3:ncol(df.mm)],
+  names_to = "Cell_type",
+  values_to = "GVSA_Score") 
+
+# Specify the desired order for Cell_type
+desired_order <- c(
+  "B_cells", "Cytotoxic_cells", "Dendritic_cells", "Eosinophils", 
+  "Macrophages", "Mast_cells", "NK_cells", "Neutrophils", 
+  "T_cells_CD4", "T_cells_CD8", "T_cells_gamma_delta", "T_regulatory_cells", 
+  "Macrophages_M1", "Macrophages_M2", "Monocytes", "Plasma_cells", 
+  "Immune_Score", "Fibroblasts", "Endothelial"
+)
+
+df.mm$Cell_type <- factor(df.mm$Cell_type, levels = desired_order)
+
+
+plot <- ggboxplot(df.mm, x = "condition", y = "GVSA_Score", add = c("dotplot"),color = "condition", ylab = "gsva score", facet.by = "Cell_type", title = "Consensus TME with TPM-normalised counts")  +
+  theme(axis.text.x = element_blank(),  
+  axis.title.x = element_blank()) +
+  geom_text(aes(label = sample), size = 3, vjust = -1)
+
+print(plot)
+
+
+# Save as PDF and jpeg
+ggsave(paste0(results.plots, "/", "TME_tpm_counts.pdf"), plot = plot, device = "pdf", width = 10, height = 12)
+ggsave(paste0(results.plots, "/", "TME_tpm_counts.jpeg"), plot = plot, device = "jpeg", width = 10, height = 12)
+
+```
+
+
+**Option2: Normalisation with DEsq, and log transformation with rlog**
+```{r}
+
+rlog_counts <- assay(rlog(dds, blind=TRUE))
+
+write.csv(rlog_counts, file = paste0(results.tables, "/", "rlog_counts_mouse.csv"))
+
+## Change mouse genes to human orthologues
+annot <- read.delim("assets/GRCm38p6ToHuman_ortho_mart_export.txt", header = T)
+
+#Remove NA
+annot = annot[!is.na(annot$Human.gene.name),]
+#See which names intersect
+ints <- intersect(rownames(rlog_counts), annot$Gene.name)
+
+rlog_counts = rlog_counts[ints,]
+annot = annot[match(ints,annot$Gene.name),]
+
+library(WGCNA)
+rlog_counts <- collapseRows(datET=rlog_counts, rowGroup=annot$Human.gene.name, rowID=annot$Gene.name)$datETcollapsed
+
+
+write.csv(rlog_counts, file = paste0(results.tables, "/", "rlog_counts_human.csv"))
+
+
+
+
+```
+
+Consensus TME with DESeq and rlog normalisation
+
+```{r, fig.width=12, fig.height=10}
+#Run Consensus TME
+library(ConsensusTME)
+library(ggpubr)
+
+rlog_counts <- read.csv(paste0(results.tables, "/","tpm_counts_human.csv"), row.names = 1)
+
+rlog_counts <- as.matrix(rlog_counts)
+
+tme.result <- ConsensusTME::consensusTMEAnalysis(rlog_counts, cancer = "BRCA", statMethod = "gsva")
+tme.result.df <- data.frame(tme.result)
+
+df.mm <- data.frame(design,t(tme.result)) 
+df.mm$condition <- factor(df.mm$condition, levels = c("noDOX", "DOX"))
+levels(df.mm$condition) <- c("-DOX", "+DOX")
+df.mm <- df.mm[order(df.mm$condition), ]
+
+df.mm <- pivot_longer(df.mm,
+  cols = colnames(df.mm)[3:ncol(df.mm)],
+  names_to = "Cell_type",
+  values_to = "GVSA_Score") 
+
+# Specify the desired order for Cell_type
+desired_order <- c(
+  "B_cells", "Cytotoxic_cells", "Dendritic_cells", "Eosinophils", 
+  "Macrophages", "Mast_cells", "NK_cells", "Neutrophils", 
+  "T_cells_CD4", "T_cells_CD8", "T_cells_gamma_delta", "T_regulatory_cells", 
+  "Macrophages_M1", "Macrophages_M2", "Monocytes", "Plasma_cells", 
+  "Immune_Score", "Fibroblasts", "Endothelial"
+)
+
+df.mm$Cell_type <- factor(df.mm$Cell_type, levels = desired_order)
+
+write.csv(df.mm, file = paste0(results.tables, "/", "consensus_tme_results_rlog.csv"))
+
+plot_w_labels <- ggboxplot(df.mm, x = "condition", y = "GVSA_Score", add = c("dotplot"),color = "condition", ylab = "gsva score", facet.by = "Cell_type", title = "Consensus TME with rlog-normalised counts")  +
+  theme(axis.text.x = element_blank(),  
+  axis.title.x = element_blank()) +
+  geom_text(aes(label = sample), size = 3, vjust = -1)
+
+print(plot_w_labels)
+
+plot <- ggboxplot(df.mm, x = "condition", y = "GVSA_Score", add = c("dotplot"),color = "condition", ylab = "gsva score", facet.by = "Cell_type", title = "Consensus TME with rlog-normalised counts")  +
+  theme(axis.text.x = element_blank(),  
+  axis.title.x = element_blank())
+
+print(plot)
+
+# Save as PDF and jpeg
+ggsave(paste0(results.plots, "/", "TME_rlog_counts.pdf"), plot = plot, device = "pdf", width = 10, height = 12)
+ggsave(paste0(results.plots, "/", "TME_rlog_counts.jpeg"), plot = plot, device = "jpeg", width = 10, height = 12)
+
+
+# Group by condition and cell type, and calculate the average GSVA score
+summary_table <- df.mm %>%
+  group_by(condition, Cell_type) %>%
+  summarise(avg_GVSA_Score = mean(GVSA_Score))
+
+table_format <- summary_table %>%
+  pivot_wider(names_from = condition, values_from = avg_GVSA_Score)
+
+# Print the table format
+print(table_format)
+
+
+```
+
+
+#Compare to results of E0771 tumours (from Judith)
+
+```{r, fig.width=6, fig.height=20}
+
+#Prepare table with results, merging both datasets
+emt6_tme <- read.csv(file = paste0(results.tables, "/", "consensus_tme_results_rlog.csv"), row.names = 1)
+
+emt6_tme <- emt6_tme %>%
+  mutate(condition = case_when(
+    condition == "noDOX" ~ "-DOX",
+    condition == "DOX" ~ "+DOX",
+    TRUE ~ condition
+  ))
+
+emt6_tme$condition <- paste0(emt6_tme$condition, "_Emt6")
+
+
+
+e0771_tme <- read.csv(file = "data/R/consensus_tme_results_rlog_E0771.csv", row.names = 1)
+
+e0771_tme <- e0771_tme %>%
+  mutate(condition = case_when(
+    condition == "noDOX" ~ "-DOX",
+    condition == "DOX" ~ "+DOX",
+    TRUE ~ condition
+  ))
+
+e0771_tme <- e0771_tme[, -c(3, 4)]
+e0771_tme$condition <- paste0(e0771_tme$condition, "_E0771")
+
+merged_table <- merge(e0771_tme, emt6_tme, all = TRUE)
+
+desired_order <- c(
+  "B_cells", "Cytotoxic_cells", "Dendritic_cells", "Eosinophils", 
+  "Macrophages", "Mast_cells", "NK_cells", "Neutrophils", 
+  "T_cells_CD4", "T_cells_CD8", "T_cells_gamma_delta", "T_regulatory_cells", 
+  "Macrophages_M1", "Macrophages_M2", "Monocytes", "Plasma_cells", 
+  "Immune_Score", "Fibroblasts", "Endothelial"
+)
+merged_table$Cell_type <- factor(merged_table$Cell_type, levels = desired_order)
+
+desired_order <- c("-DOX_Emt6", "+DOX_Emt6", "-DOX_E0771", "+DOX_E0771")
+merged_table$condition <- factor(merged_table$condition, levels = desired_order)
+merged_table <- separate(merged_table, condition, into = c("DOX_Status", "Cell_Line"), sep = "_", remove = FALSE)
+
+#Plot the graph
+#https://www.colorhexa.com/color-name
+
+custom_palette <- c("-DOX" = "red", "+DOX" = "blue")
+
+subsets <- list(
+  Adaptive = c("B_cells", "Cytotoxic_cells", "NK_cells", 
+                        "T_cells_CD4", "T_cells_CD8", "T_cells_gamma_delta", "T_regulatory_cells"),
+  Innate = c("Dendritic_cells", "Eosinophils", 
+                          "Macrophages", "Mast_cells", "Neutrophils", 
+                          "Macrophages_M1", "Macrophages_M2", "Monocytes"),
+  Others = c("Fibroblasts", "Endothelial")
+)
+
+# Create and save plots
+for (subset_name in names(subsets)) {
+  subset_cells <- subsets[[subset_name]]
+  subset_data <- subset(merged_table, Cell_type %in% subset_cells)
+  
+  plot <- ggboxplot(subset_data, 
+                    x = "DOX_Status", 
+                    y = "GVSA_Score", 
+                    add = c("dotplot"), 
+                    facet.by = "Cell_type", 
+                    color = "DOX_Status", palette = c("red", "blue"), 
+                    title = paste(subset_name)) +
+    theme(axis.title.x = element_blank(), strip.text.y = element_text(size=7, face = "bold")) +
+    facet_grid(~ Cell_type ~ Cell_Line) +
+    scale_colour_manual(values = custom_palette) +
+    grids(linetype = "dashed")
+  
+  print(plot)
+  
+  ggsave(paste0(results.plots, "/", "TME_Emt6_E0771_", gsub(" ", "_", subset_name), ".pdf"), plot = plot, device = "pdf", width = 4.5, height = 9)
+  ggsave(paste0(results.plots, "/", "TME_Emt6_E0771_", gsub(" ", "_", subset_name), ".jpeg"), plot = plot, device = "jpeg", width = 4.5, height = 9)
+}
+
+
+
+
+
+
+
+```
+
+#Test other deconvolution methods: 
+https://omnideconv.org/immunedeconv/articles/immunedeconv.html
+
+
+```{r, include=FALSE, fig.width=8, fig.height=6}
+
+library(immunedeconv)
+library(ggpubr)
+
+tpm_counts_human <- read.csv(paste0(results.tables, "/","tpm_counts_human.csv"), row.names = 1)
+
+tpm_counts_mouse <- read.csv(paste0(results.tables, "/","tpm_counts_mouse.csv"), row.names = 1)
+
+xcell_data <- immunedeconv::deconvolute(tpm_counts_human, "xcell")
+mcp_data <- immunedeconv::deconvolute(tpm_counts_human, "mcp_counter")
+epic_data <- immunedeconv::deconvolute(tpm_counts_human, "epic")
+quantiseq_data <- immunedeconv::deconvolute(tpm_counts_human, "quantiseq")
+#consensus_data <- immunedeconv::deconvolute(tpm_counts_human, "consensus_tme")
+
+mouse_mcp_data <- immunedeconv::deconvolute(tpm_counts_mouse, "mmcp_counter")
+
+
+# List of data frames (replace with your actual data frames)
+data_frames_list <- list(xcell = xcell_data, mcp = mcp_data, epic = epic_data, quantiseq = quantiseq_data)
+
+# Loop through each data frame (check data frame format!)
+for (i in seq_along(data_frames_list)) {
+  df <- data_frames_list[[i]]
+
+  row.names <- df$cell_type
+  # Remove first column
+  df <- df[, -1]
+
+  # Set row names
+  row.names(df) <- row.names
+  
+
+  # Create df.mm data frame
+  df.mm <- data.frame(design, t(df))
+
+  # Factorize condition column
+  df.mm$condition <- factor(df.mm$condition, levels = c("noDOX", "DOX"))
+
+  # Order by condition
+  df.mm <- df.mm[order(df.mm$condition), ]
+
+  # Pivot data
+  df.mm_long <- pivot_longer(df.mm,
+                             cols = colnames(df.mm)[3:ncol(df.mm)],
+                             names_to = "Cell_type",
+                             values_to = "GVSA_Score")
+
+  # Create and print the plot
+  plot <- ggboxplot(df.mm_long, 
+                    x = "condition", 
+                    y = "GVSA_Score", 
+                    add = c("dotplot"),
+                    color = "condition", 
+                    ylab = "gsva score", 
+                    facet.by = "Cell_type", 
+                    title = paste(names(data_frames_list)[i])) +
+    theme(axis.text.x = element_blank(),
+          axis.title.x = element_blank()) +
+    geom_text(aes(label = sample), size = 3, vjust = -1)
+
+  print(plot)
+}
+
+
+```
+
+
+
+# End section
+
+```{r}
+
+# List versions, packages etc used
+sessionInfo()
+
+```
