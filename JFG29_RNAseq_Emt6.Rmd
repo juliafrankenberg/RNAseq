@@ -46,18 +46,19 @@ library(fastcluster)
 library(GSVA)
 library(rmarkdown)
 library(WGCNA)
+library(EnhancedVolcano)
 
 
 # Define paths for folder locations and input files (this can then be changed here only if locations change)
 
-results.tables <- "results/R/tables/all_samples"
-results.plots <- "results/R/plots/all_samples"
+results.tables <- "results/R/tables/test_nohist173"
+results.plots <- "results/R/plots/test_nohist173"
 
 dir.create(results.tables, showWarnings = F, recursive = T)
 dir.create(results.plots, showWarnings = F, recursive = T)
 
-counts <- "data/R/raw_counts.csv"
-design <- "data/R/design.csv"
+counts <- "data/R/raw_counts_nohist173.csv"
+design <- "data/R/design_nohist173.csv"
 
 
 # Read files
@@ -138,7 +139,7 @@ dim(counts.keep)
 
 **For most downstream analysis, we need to normalise the samples:**
 
-Data should be normalised to control for sequencing depth, gene lenght and, optionally, variance.
+Data should be normalised to control for sequencing depth, gene length and, optionally, variance.
 Normalisation can be performed using:
 
 -   DESeq includes some normalisation (median of ratios, takes into account RNA composition)
@@ -228,13 +229,32 @@ abline(h=median(assay(vsd)), col="blue", main="Boxplots of logCPMs (unnormalised
 
 
 ```{r}
+#Change order and name of condition
+vsd$condition <- factor(vsd$condition, levels = c("noDOX", "DOX"))
+levels(vsd$condition) <- c("-DOX", "+DOX")
+
 # Create the PCA plot
 pca_data <- plotPCA(vsd, intgroup = "condition")
 nudge <- position_nudge(y = 1)
-pca_data + 
+pca_w_labels <- pca_data + 
   geom_text(aes(label = name), 
-            position = nudge) + ggtitle("Histology Number")
+            position = nudge, size = 2) + ggtitle("Principal Component Analysis")
 
+pca <- pca_data + ggtitle("Principal Component Analysis")
+
+pca_w_labels
+pca
+
+
+ # Save the plot as a PDF file
+  pdf(paste0(results.plots, "/", "pca.pdf"), width = 6, height = 6)
+  print(pca)
+  dev.off()
+  
+  # Save the plot as a JPEG file
+  jpeg(paste0(results.plots, "/", "pca.jpeg"), width = 500, height = 500)
+  print(pca)
+  dev.off()
 
 ```
 
@@ -259,19 +279,42 @@ paged_table(ordered.results)
 
 write.csv(ordered.results, paste0(results.tables, "/", "de_genes.csv"), row.names = TRUE)
 
+```
+
+```{r, fig.width=8, fig.height=8}
 #Volcano Plot
-
-plot(results$log2FoldChange, -log10(results$padj),
-     pch=16,       
-     xlab="Log Fold Change",
-     ylab="Significance")
-degenes <- which(results$padj < 0.05)
-points(results$log2FoldChange[degenes],-log10(results$padj)[degenes],
-       col="red",
-       pch=16)
+#https://bioconductor.org/packages/devel/bioc/vignettes/EnhancedVolcano/inst/doc/EnhancedVolcano.html  
 
 
-
+ plot <- EnhancedVolcano(results,
+    lab = rownames(results),
+    x = 'log2FoldChange',
+    y = 'padj',
+    title = '-DOX vs +DOX tumours',
+    pCutoff = 0.05,
+    FCcutoff = 0.5,
+    pointSize = 2.5,
+    labSize = 8, 
+    labFace = 'bold',
+    col=c('grey', 'grey', 'grey', '#cb4154'),
+    colAlpha = 2, 
+    legendPosition = "none", 
+    cutoffLineType = 'blank')
+ 
+ plot
+ 
+ # Save the plot as a PDF file
+  pdf(paste0(results.plots, "/", "volcano.pdf"), width = 6, height = 6)
+  print(plot)
+  dev.off()
+  
+  # Save the plot as a JPEG file
+  jpeg(paste0(results.plots, "/", "volcano.jpeg"), width = 700, height = 700)
+  print(plot)
+  dev.off()
+  
+  
+  
 
 
 ```
@@ -440,7 +483,7 @@ Now run Consensus TME with the tmp-normalised counts
 library(ConsensusTME)
 library(ggpubr)
 
-tpm <- read.csv(file = paste0(results.tables, "/", "tpm_counts_human.csv"), row.names = 1)
+#tpm <- read.csv(file = paste0(results.tables, "/", "tpm_counts_human.csv"), row.names = 1)
 
 tpm <- as.matrix(tpm)
 
@@ -528,6 +571,7 @@ tme.result.df <- data.frame(tme.result)
 
 df.mm <- data.frame(design,t(tme.result)) 
 df.mm$condition <- factor(df.mm$condition, levels = c("noDOX", "DOX"))
+levels(df.mm$condition) <- c("-DOX", "+DOX")
 df.mm <- df.mm[order(df.mm$condition), ]
 
 df.mm <- pivot_longer(df.mm,
@@ -548,10 +592,16 @@ df.mm$Cell_type <- factor(df.mm$Cell_type, levels = desired_order)
 
 write.csv(df.mm, file = paste0(results.tables, "/", "consensus_tme_results_rlog.csv"))
 
-plot <- ggboxplot(df.mm, x = "condition", y = "GVSA_Score", add = c("dotplot"),color = "condition", ylab = "gsva score", facet.by = "Cell_type", title = "Consensus TME with rlog-normalised counts")  +
+plot_w_labels <- ggboxplot(df.mm, x = "condition", y = "GVSA_Score", add = c("dotplot"),color = "condition", ylab = "gsva score", facet.by = "Cell_type", title = "Consensus TME with rlog-normalised counts")  +
   theme(axis.text.x = element_blank(),  
   axis.title.x = element_blank()) +
   geom_text(aes(label = sample), size = 3, vjust = -1)
+
+print(plot_w_labels)
+
+plot <- ggboxplot(df.mm, x = "condition", y = "GVSA_Score", add = c("dotplot"),color = "condition", ylab = "gsva score", facet.by = "Cell_type", title = "Consensus TME with rlog-normalised counts")  +
+  theme(axis.text.x = element_blank(),  
+  axis.title.x = element_blank())
 
 print(plot)
 
@@ -573,27 +623,39 @@ print(table_format)
 
 
 ```
-Compare to results of Judith's data
 
-```{r, fig.width=8, fig.height=6}
 
+#Compare to results of E0771 tumours (from Judith)
+
+```{r, fig.width=6, fig.height=20}
+
+#Prepare table with results, merging both datasets
 emt6_tme <- read.csv(file = paste0(results.tables, "/", "consensus_tme_results_rlog.csv"), row.names = 1)
 
-emt6_tme$condition <- paste0(emt6_tme$condition, "_emt6")
+emt6_tme <- emt6_tme %>%
+  mutate(condition = case_when(
+    condition == "noDOX" ~ "-DOX",
+    condition == "DOX" ~ "+DOX",
+    TRUE ~ condition
+  ))
+
+emt6_tme$condition <- paste0(emt6_tme$condition, "_Emt6")
+
+
 
 e0771_tme <- read.csv(file = "data/R/consensus_tme_results_rlog_E0771.csv", row.names = 1)
 
+e0771_tme <- e0771_tme %>%
+  mutate(condition = case_when(
+    condition == "noDOX" ~ "-DOX",
+    condition == "DOX" ~ "+DOX",
+    TRUE ~ condition
+  ))
+
 e0771_tme <- e0771_tme[, -c(3, 4)]
-e0771_tme$condition <- paste0(e0771_tme$condition, "_e0771")
+e0771_tme$condition <- paste0(e0771_tme$condition, "_E0771")
 
 merged_table <- merge(e0771_tme, emt6_tme, all = TRUE)
-
-
-plot <- ggboxplot(merged_table, x = "condition", y = "GVSA_Score", add = c("dotplot"),color = "condition", ylab = "gsva score", facet.by = "Cell_type", title = "Consensus TME of E0771 and Emt6 experiments")  +
-  theme(axis.text.x = element_blank(),  
-  axis.title.x = element_blank()) 
-
-
 
 desired_order <- c(
   "B_cells", "Cytotoxic_cells", "Dendritic_cells", "Eosinophils", 
@@ -604,32 +666,60 @@ desired_order <- c(
 )
 merged_table$Cell_type <- factor(merged_table$Cell_type, levels = desired_order)
 
-desired_order <- c("noDOX_emt6", "DOX_emt6", "noDOX_e0771", "DOX_e0771")
-
+desired_order <- c("-DOX_Emt6", "+DOX_Emt6", "-DOX_E0771", "+DOX_E0771")
 merged_table$condition <- factor(merged_table$condition, levels = desired_order)
+merged_table <- separate(merged_table, condition, into = c("DOX_Status", "Cell_Line"), sep = "_", remove = FALSE)
+
+#Plot the graph
+#https://www.colorhexa.com/color-name
+
+custom_palette <- c("-DOX" = "red", "+DOX" = "blue")
+
+subsets <- list(
+  Adaptive = c("B_cells", "Cytotoxic_cells", "NK_cells", 
+                        "T_cells_CD4", "T_cells_CD8", "T_cells_gamma_delta", "T_regulatory_cells"),
+  Innate = c("Dendritic_cells", "Eosinophils", 
+                          "Macrophages", "Mast_cells", "Neutrophils", 
+                          "Macrophages_M1", "Macrophages_M2", "Monocytes"),
+  Others = c("Fibroblasts", "Endothelial")
+)
+
+# Create and save plots
+for (subset_name in names(subsets)) {
+  subset_cells <- subsets[[subset_name]]
+  subset_data <- subset(merged_table, Cell_type %in% subset_cells)
+  
+  plot <- ggboxplot(subset_data, 
+                    x = "DOX_Status", 
+                    y = "GVSA_Score", 
+                    add = c("dotplot"), 
+                    facet.by = "Cell_type", 
+                    color = "DOX_Status", palette = c("red", "blue"), 
+                    title = paste(subset_name)) +
+    theme(axis.title.x = element_blank(), strip.text.y = element_text(size=7, face = "bold")) +
+    facet_grid(~ Cell_type ~ Cell_Line) +
+    scale_colour_manual(values = custom_palette) +
+    grids(linetype = "dashed")
+  
+  print(plot)
+  
+  ggsave(paste0(results.plots, "/", "TME_Emt6_E0771_", gsub(" ", "_", subset_name), ".pdf"), plot = plot, device = "pdf", width = 4.5, height = 9)
+  ggsave(paste0(results.plots, "/", "TME_Emt6_E0771_", gsub(" ", "_", subset_name), ".jpeg"), plot = plot, device = "jpeg", width = 4.5, height = 9)
+}
 
 
-custom_palette <- c("noDOX_emt6" = "red", "DOX_emt6" = "blue", "noDOX_e0771" = "red", "DOX_e0771" = "blue")
 
-
-plot <- ggboxplot(merged_table, x = "condition", y = "GVSA_Score", 
-                  add = c("dotplot"), facet.by = "Cell_type", color = "condition", title = "Consensus TME of E0771 and Emt6 experiments") +
-  theme(axis.text.x = element_blank(), axis.title.x = element_blank()) +
-  scale_colour_manual(values = custom_palette) +
-  scale_fill_manual(values = custom_palette)
-
-print(plot)
 
 
 
 
 ```
 
-Test other deconvolution methods: 
+#Test other deconvolution methods: 
 https://omnideconv.org/immunedeconv/articles/immunedeconv.html
 
 
-```{r, fig.width=8, fig.height=6}
+```{r, include=FALSE, fig.width=8, fig.height=6}
 
 library(immunedeconv)
 library(ggpubr)
