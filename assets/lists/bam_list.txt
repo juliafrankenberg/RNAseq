@@ -1,0 +1,10 @@
+results/star_alignment/hist173Aligned.sortedByCoord.out.bam
+results/star_alignment/hist174Aligned.sortedByCoord.out.bam
+results/star_alignment/hist181Aligned.sortedByCoord.out.bam
+results/star_alignment/hist177Aligned.sortedByCoord.out.bam
+results/star_alignment/hist182Aligned.sortedByCoord.out.bam
+results/star_alignment/hist176Aligned.sortedByCoord.out.bam
+results/star_alignment/hist175Aligned.sortedByCoord.out.bam
+results/star_alignment/hist178Aligned.sortedByCoord.out.bam
+results/star_alignment/hist180Aligned.sortedByCoord.out.bam
+results/star_alignment/hist179Aligned.sortedByCoord.out.bam
