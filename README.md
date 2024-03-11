@@ -1,7 +1,12 @@
-This is the analysis of the RNAseq data from RNA extracted from tumours 
-of Emt6.Plk4 mice (experiment SG-JFG01 mouse experiment). There are 5 
--DOX and 5 +DOX tumours.
+This is an RNAseq analysis that can be used as a template for other RNAseq experiments. The analysis directory should have: 
+* numbered scripts (shown here)
+* /data (not shown here, where raw data/slightly processed is stored. IMPORTANT: for raw data, after inspection and alignment of fq files, run chmod 444 folder_where_files_are to remove edit access to folder and avoid deleting the files accidentaly (can undo this by chmod 770 folder_where_files_are))
+* /assets (shown here, where lists and other important assets - e.g. ref genome info - is stored)
+* /results (partially shown here, folder storing all results, tables plots, intermediate analysis files etc; most scripts include the creation of folders with the respective results)
+* renv.lock (shown here, to keep track of R packages used)
 
+
+This is the analysis of the RNAseq data from RNA extracted from tumours of Emt6.Plk4 mice (experiment SG-JFG01 mouse experiment). There are 5 -DOX and 5 +DOX tumours.
 
 ## Get files and inspect them (Apocrita):
 
@@ -89,7 +94,7 @@ run feature counts (different scripts in laptop vs cluster bc of different ways 
     
    on laptop: 
 
-    bash feature_counts.sh
+    bash a7_feature_counts.sh
 
    on cluster: 
    
@@ -110,7 +115,8 @@ Then can align samples (before running do a test run to print the command by add
 
 Output are folders for each sample with quant.sf files, that are then imported to R using tximport, transforming in a data frame
 
-## Important: after inspection and alignment of fq files, run chmod 444 folder_where_files_are to remove edit access to folder and avoid deleting the files accidentaly (can undo this by chmod 770 folder)
+
 
 
 ### Then use raw or normalised counts for further analysis in R
+The initial input is the raw_counts.csv file from feature counts, and a design file that will have to be created (example added)
